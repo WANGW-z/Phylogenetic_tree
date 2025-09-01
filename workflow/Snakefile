@@ -1,0 +1,138 @@
+# Snakefile
+import json
+import os
+
+
+#虚拟环境路径
+cblaster_env_path = "cblaster_env"
+# 读取配置文件
+config_path = "/your/path/workflow/config/config.json"
+with open(config_path, "r") as f:
+    config = json.load(f)
+
+# 定义文件路径
+
+query = config["input"]["query"]
+outgroup = config["input"]["outgroup"] 
+cblaster_config = config["cblaster"]
+cblaster_dir = cblaster_config["output_dir"]
+phylogeny_dir = config["phylogeny"]["output_dir"]  # result/phylogeny
+
+# 获取cblaster参数
+mi = cblaster_config["min_identity"]
+mc = cblaster_config["min_coverage"]
+gap = cblaster_config["gap"]
+database = cblaster_config.get("database", "nr")
+threads = cblaster_config.get("threads", 4)
+
+# 输出文件
+search_results = f"{cblaster_dir}/P1_search_results.txt"
+session_file = f"{cblaster_dir}/P1_session.json"
+homologs_dir = f"{cblaster_dir}/P1_homologs"
+all_proteins = f"{cblaster_dir}/all_proteins_with_organism.fasta"
+tree_nwk = f"{phylogeny_dir}/tree.nwk"
+all_sequences = f"{phylogeny_dir}/all_sequences.fasta"
+unique_sequences = f"{phylogeny_dir}/unique_sequences.fasta"
+alignment_aln = f"{phylogeny_dir}/alignment.aln"
+# 规则：所有目标
+rule all:
+    input:
+        search_results,
+        session_file,
+        homologs_dir,
+        all_proteins,
+        tree_nwk
+# 规则：cblaster搜索和提取
+rule cblaster_pipeline:
+    input:
+        query = query
+    output:
+        results = search_results,
+        session = session_file,
+        homologs = directory(homologs_dir),
+        proteins = all_proteins
+    log:
+        "logs/cblaster_pipeline.log"
+    conda:
+        "cblaster_env"
+    params:
+        mi = mi,
+        mc = mc,
+        gap = gap,
+        database = database,
+        threads = threads
+    shell:
+        """
+        # 创建输出目录
+        mkdir -p {cblaster_dir}
+        mkdir -p logs
+
+        # 执行cblaster搜索
+        echo "$(date): 开始cblaster搜索..." >> {log}
+        echo "使用数据库: {params.database}" >> {log}
+        echo "搜索参数: identity≥{params.mi}%, coverage≥{params.mc}%, gap≤{params.gap}bp" >> {log}
+        echo "线程数: {params.threads}" >> {log}
+        echo "最小命中数: 使用默认值(3)" >> {log}
+        
+        cblaster search \
+            -qf {input.query} \
+            -mi {params.mi} \
+            -mc {params.mc} \
+            -g {params.gap} \
+            -db {params.database} \
+            -cp {params.threads} \
+            -o {output.results} \
+            -s {output.session} \
+            2>> {log}
+
+        echo "$(date): cblaster搜索完成" >> {log}
+
+        # 提取同源基因簇，生成一堆 .gbk 文件到目录
+        echo "$(date): 开始提取基因簇..." >> {log}
+        cblaster extract_clusters \
+            {output.session} \
+            -o {output.homologs} \
+            2>> {log}
+
+        echo "$(date): 基因簇提取完成，开始提取蛋白质与物种信息..." >> {log}
+
+        # ✅ 在这里直接调用你的 extract_proteins.py 脚本，传入该目录下所有 .gbk 文件
+        python script/extract_proteins.py --gbk-dir {output.homologs} --output {output.proteins} >> {log} 2>&1
+
+        echo "$(date): 蛋白质与物种信息提取完成" >> {log}
+        echo "cblaster流程完成！结果保存在: {cblaster_dir}" >> {log}
+        """
+rule build_phylogenetic_tree:
+    input:
+        all_proteins = f"{cblaster_dir}/all_proteins_with_organism.fasta",  # 来自 cblaster
+        outgroup = outgroup,                         
+        query = query                                                        
+    output:
+        tree = f"{phylogeny_dir}/tree.nwk"                                   # 最终树文件
+    log:
+        f"{phylogeny_dir}/build_phylogenetic_tree.log"
+    conda:
+        "cblaster_env"    
+    threads: 4
+    shell:
+        """
+        echo "=== 开始构建系统发育树 ==="
+
+        # --- 1. 整合所有输入序列：all_proteins + outgroup + query ---
+        echo "3. 整合所有序列..."
+        cat {input.all_proteins} {input.outgroup} {input.query} > {phylogeny_dir}/all_sequences.fasta
+
+        # --- 2. 序列去重（基于序列内容，非ID）---
+        echo "4. 序列去重..."
+        seqkit rmdup -s {phylogeny_dir}/all_sequences.fasta > {phylogeny_dir}/unique_sequences.fasta
+
+        # --- 3. 多序列比对 ---
+        echo "5. 进行多序列比对..."
+        mafft --auto --thread {threads} {phylogeny_dir}/unique_sequences.fasta > {phylogeny_dir}/alignment.aln
+
+        # --- 4. 构建最大似然系统发育树（FastTree）---
+        echo "6. 构建最大似然系统发育树..."
+        FastTree -lg -gamma {phylogeny_dir}/alignment.aln > {output.tree}
+
+        echo "系统发育树已生成：{output.tree}"
+        """

@@ -1,0 +1,18 @@
+{
+  "workdir": "/your/path/workflow",
+  "input": {
+    "query": "/your/path/datas/P1.fasta",
+    "outgroup": "/your/path/datas/hARGI.fasta"
+  },
+  "cblaster": {
+    "min_identity": 25,
+    "min_coverage": 70,
+    "gap": 2000,
+    "output_dir": "result/cblaster",
+    "database": "nr",
+    "threads": 4
+  },
+  "phylogeny": {
+    "output_dir": "result/phylogeny"
+  }
+}
