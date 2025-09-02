@@ -6,7 +6,7 @@ import os
 #虚拟环境路径
 cblaster_env_path = "cblaster_env"
 # 读取配置文件
-config_path = "/your/path/workflow/config/config.json"
+config_path = "/mnt/sdc/wwDatas/tjy/workflow/config/config.json"
 with open(config_path, "r") as f:
     config = json.load(f)
 
@@ -34,6 +34,8 @@ tree_nwk = f"{phylogeny_dir}/tree.nwk"
 all_sequences = f"{phylogeny_dir}/all_sequences.fasta"
 unique_sequences = f"{phylogeny_dir}/unique_sequences.fasta"
 alignment_aln = f"{phylogeny_dir}/alignment.aln"
+
+
 # 规则：所有目标
 rule all:
     input:
@@ -105,8 +107,8 @@ rule cblaster_pipeline:
 rule build_phylogenetic_tree:
     input:
         all_proteins = f"{cblaster_dir}/all_proteins_with_organism.fasta",  # 来自 cblaster
-        outgroup = outgroup,                         
-        query = query                                                        
+        outgroup = outgroup,                         # /mnt/sdc/wwDatas/tjy/datas/hARGI.fasta
+        query = query                                                        # /mnt/sdc/wwDatas/tjy/datas/P1.fasta
     output:
         tree = f"{phylogeny_dir}/tree.nwk"                                   # 最终树文件
     log:
@@ -118,20 +120,38 @@ rule build_phylogenetic_tree:
         """
         echo "=== 开始构建系统发育树 ==="
 
-        # --- 1. 整合所有输入序列：all_proteins + outgroup + query ---
-        echo "3. 整合所有序列..."
-        cat {input.all_proteins} {input.outgroup} {input.query} > {phylogeny_dir}/all_sequences.fasta
+        # --------------------------
+        # 1. 去重：仅对同源蛋白（all_proteins）去重
+        # --------------------------
+        echo "1. 对同源蛋白序列去重（基于序列内容，非ID）..."
+        seqkit rmdup -s {cblaster_dir}/all_proteins_with_organism.fasta > {phylogeny_dir}/unique_sequences.fasta
 
-        # --- 2. 序列去重（基于序列内容，非ID）---
-        echo "4. 序列去重..."
-        seqkit rmdup -s {phylogeny_dir}/all_sequences.fasta > {phylogeny_dir}/unique_sequences.fasta
+        # --------------------------
+        # 2. 合并：去重后的同源蛋白 + query + outgroup
+        # --------------------------
+        echo "2. 合并去重后的同源蛋白、query 和 outgroup 序列..."
+        # 确保每个输入文件末尾都有换行符（避免 cat 后粘连）
+        echo "" >> {phylogeny_dir}/unique_sequences.fasta
+        echo "" >> {input.query}
+        echo "" >> {input.outgroup}
 
-        # --- 3. 多序列比对 ---
-        echo "5. 进行多序列比对..."
-        mafft --auto --thread {threads} {phylogeny_dir}/unique_sequences.fasta > {phylogeny_dir}/alignment.aln
+# 使用 cat 安全合并（此时不会粘连）
+        cat \
+    {phylogeny_dir}/unique_sequences.fasta \
+    {input.query} \
+    {input.outgroup} \
+    > {phylogeny_dir}/all_sequences.fasta
 
-        # --- 4. 构建最大似然系统发育树（FastTree）---
-        echo "6. 构建最大似然系统发育树..."
+        # --------------------------
+        # 3. 多序列比对：对 同源蛋白 + query + outgroup 一起比对
+        # --------------------------
+        echo "3. 进行多序列比对（MAFFT）..."
+        mafft --auto --thread {threads} {phylogeny_dir}/all_sequences.fasta > {phylogeny_dir}/alignment.aln
+
+        # --------------------------
+        # 4. 构建最大似然系统发育树（FastTree）
+        # --------------------------
+        echo "4. 构建最大似然系统发育树（FastTree）..."
         FastTree -lg -gamma {phylogeny_dir}/alignment.aln > {output.tree}
 
         echo "系统发育树已生成：{output.tree}"
